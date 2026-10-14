@@ -6,9 +6,14 @@
 #define PF_AWARE 1
 
 // Set-dueling counter: 10 bits, saturating
-#define PSEL_BITS 10
+#define PSEL_BITS 8
 #define PSEL_MAX  ((1 << PSEL_BITS) - 1)
 #define PSEL_MID  (1 << (PSEL_BITS - 1))
+// #define PSEL_MID
+
+// PSEL training weights: an instruction demand miss moves PSEL more than a data demand miss
+#define INSTR_MISS_WEIGHT 1
+#define DATA_MISS_WEIGHT  1
 
 uint32_t l2_rrpv[L2C_SET][L2C_WAY];
 uint8_t  l2_is_instr[L2C_SET][L2C_WAY]; // line was brought in / touched by an instruction fetch
@@ -110,11 +115,12 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
 
     // PSEL training: demand misses in the leader sets
     if (!hit && role != 0 && is_demand) {
-        if (role == 1) {
-            if (l2_psel < PSEL_MAX) l2_psel++;
-        } else {
-            if (l2_psel > 0) l2_psel--;
-        }
+        int w = (is_instr && type == LOAD) ? INSTR_MISS_WEIGHT : DATA_MISS_WEIGHT;
+
+        if (role == 1)
+            l2_psel = (l2_psel + w > PSEL_MAX) ? PSEL_MAX : l2_psel + w;   // I-RRIP leader missed: up
+        else
+            l2_psel = (l2_psel > w) ? l2_psel - w : 0;                     // RRIP leader missed: down
     }
 
     if (hit) {
@@ -138,7 +144,7 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
         uint32_t ins = maxRRPV - 1;
 
         if (irrip && is_instr)
-            ins = (type == LOAD) ? 0 : 1;   // demand instruction fetch: top priority, instruction prefetch: high
+            ins = (PF_AWARE && type != LOAD) ? 1 : 0; // demand instruction fetch: 0; instruction prefetch: 1 (only when PF-aware)
         else if (PF_AWARE && is_pf)
             ins = maxRRPV;                  // data prefetch: distant, evicted first unless demanded
 
